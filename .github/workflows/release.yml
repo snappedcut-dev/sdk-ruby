@@ -1,0 +1,36 @@
+name: Release
+
+# Publishing happens here and nowhere else. `id-token: write` is what lets
+# RubyGems accept the push through trusted publishing — OIDC rather than a
+# long-lived API key that would have to live in a secret.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+          bundler-cache: true
+      - run: ruby -Ilib -Itest test/test_client.rb
+      - run: bundle exec rubocop
+      # The tag is the source of truth: v1.2.3 must be VERSION 1.2.3, or the gem
+      # on RubyGems and the tag in git disagree forever.
+      - name: The tag must match the version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          gem_version="$(ruby -Ilib -e 'require "snappedcut/version"; print SnappedCut::VERSION')"
+          [ "$tag" = "$gem_version" ] || { echo "tag $tag != VERSION $gem_version"; exit 1; }
+      - uses: rubygems/release-gem@v1

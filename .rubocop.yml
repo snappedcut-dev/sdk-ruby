@@ -1,0 +1,12 @@
+AllCops:
+  TargetRubyVersion: 3.1
+  NewCops: enable
+  SuggestExtensions: false
+
+# The client is one cohesive object over five endpoints. Splitting it to satisfy
+# a line count would make it harder to read, not easier.
+Metrics:
+  Enabled: false
+
+Style/Documentation:
+  Enabled: true
