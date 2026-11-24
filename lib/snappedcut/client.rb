@@ -45,7 +45,7 @@ module SnappedCut
 
     # Never the key: an inspect ends up in logs and exception reports.
     def inspect
-      "#<SnappedCut::Client base=#{@base.inspect} key=#{@key.empty? ? 'unset' : 'set'}>"
+      "#<SnappedCut::Client base=#{@base.inspect} key=#{@key.empty? ? "unset" : "set"}>"
     end
 
     # The account behind the key: who, and how many credits are left.
@@ -109,9 +109,7 @@ module SnappedCut
         # is a plain error, not something the caller has to reconcile.
         raise Error.new(current.error || "The render failed.", 500) if current.failed?
 
-        if monotonic > deadline
-          raise Error.new("Job #{id} is still #{current.state}.", 504)
-        end
+        raise Error.new("Job #{id} is still #{current.state}.", 504) if monotonic > deadline
 
         sleeper.call(delay)
         delay = [delay * 1.5, 15.0].min
