@@ -206,8 +206,8 @@ module SnappedCut
     end
 
     # Mints an embed session token for one of your end users. Server side only.
-    def create_embed_token(pk, end_user_id, max_credits: nil, ttl_seconds: nil, origin: nil, features: nil)
-      body = { pk: pk, endUserId: end_user_id, maxCredits: max_credits,
+    def create_embed_token(publishable_key, end_user_id, max_credits: nil, ttl_seconds: nil, origin: nil, features: nil)
+      body = { pk: publishable_key, endUserId: end_user_id, maxCredits: max_credits,
                ttlSeconds: ttl_seconds, origin: origin, features: features }.compact
       call_json(Net::HTTP::Post, "/api/embed/tokens", body)
     end

@@ -241,9 +241,9 @@ class TestClient < Minitest::Test
     chunks = @calls.select { |c| c[:method] == "PUT" }
 
     assert_equal({ "contentType" => "video/webm", "name" => "clip.webm" }, JSON.parse(@calls[0][:body]))
-    assert_equal %w[https://up.test/u/a1?token=tok&offset=0 https://up.test/u/a1?token=tok&offset=4],
-                 chunks.map { |c| c[:url] }
-    assert_equal %w[abcd ef], chunks.map { |c| c[:body] }
+    assert_equal(%w[https://up.test/u/a1?token=tok&offset=0 https://up.test/u/a1?token=tok&offset=4],
+                 chunks.map { |c| c[:url] })
+    assert_equal(%w[abcd ef], chunks.map { |c| c[:body] })
     chunks.each { |c| refute c[:headers].key?("authorization") }
     assert_equal "https://snappedcut.com/api/uploads/a1/confirm", @calls.last[:url]
     assert_equal "a1", asset["id"]
@@ -268,8 +268,8 @@ class TestClient < Minitest::Test
     c = client([200, "OUT0"], [200, "OUT1"])
     assert_equal "OUT0", c.download_output("j1")
     c.download_output("j1", 1)
-    assert_equal %w[https://snappedcut.com/api/jobs/j1/output https://snappedcut.com/api/jobs/j1/output?index=1],
-                 @calls.map { |c2| c2[:url] }
+    assert_equal(%w[https://snappedcut.com/api/jobs/j1/output https://snappedcut.com/api/jobs/j1/output?index=1],
+                 @calls.map { |c2| c2[:url] })
   end
 
   def test_a_destination_test_422_is_an_answer
@@ -280,8 +280,8 @@ class TestClient < Minitest::Test
     c = client([200, {}], [200, {}])
     c.usage
     c.usage(end_user_id: "u 1", group_by: "day")
-    assert_equal %w[https://snappedcut.com/api/usage https://snappedcut.com/api/usage?endUserId=u+1&groupBy=day],
-                 @calls.map { |x| x[:url] }
+    assert_equal(%w[https://snappedcut.com/api/usage https://snappedcut.com/api/usage?endUserId=u+1&groupBy=day],
+                 @calls.map { |x| x[:url] })
   end
 
   def test_webhook_update_sends_only_what_changed

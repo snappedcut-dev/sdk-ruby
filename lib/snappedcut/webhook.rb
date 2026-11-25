@@ -2,6 +2,7 @@
 
 require "openssl"
 
+# Webhook signature verification; needs no client and no key.
 module SnappedCut
   # How far a signature's timestamp may be from now before it is refused.
   WEBHOOK_TOLERANCE_MS = 300_000

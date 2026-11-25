@@ -55,7 +55,7 @@ like `sk_snapcut_…`. Keep it in credentials, not in the repo; it spends credit
 | `#compile_design(design, vars)` / `#render_design(design, options, idempotency_key)` | |
 | `#upload(data, content_type, name)` | String or IO, chunked; returns the confirmed asset. `#get_asset` / `#delete_asset`. |
 | `#operations` / `#usage(from:, to:, end_user_id:, group_by:)` / `#delete_end_user(id)` | |
-| `#create_embed_token(pk, end_user_id, max_credits:, ttl_seconds:, origin:, features:)` | |
+| `#create_embed_token(publishable_key, end_user_id, max_credits:, ttl_seconds:, origin:, features:)` | |
 | `#destinations` | `list`, `create`, `get`, `update`, `delete`, `test` (a 422 is returned, not raised), `presign`. |
 | `#webhooks` | `list`, `create(url, events)`, `get`, `update(id, url:, events:, enabled:)`, `delete`, `rotate`, `deliveries`, `test`. |
 
