@@ -8,15 +8,17 @@ module SnappedCut
   # be rescued without parsing a message. Status 0 means the server was never
   # reached, which is the one case worth sending again.
   class Error < StandardError
-    attr_reader :status, :retry_after_ms, :expected
+    attr_reader :status, :retry_after_ms, :expected, :code
 
     # @param expected [Integer] on a 409 from a chunked upload, the byte the
     #   server's copy ends at.
-    def initialize(message, status, retry_after_ms: 0, expected: 0)
+    # @param code [String, nil] the body's machine-readable +code+, when it has one.
+    def initialize(message, status, retry_after_ms: 0, expected: 0, code: nil)
       super(message)
       @status = status
       @retry_after_ms = retry_after_ms
       @expected = expected
+      @code = code
     end
 
     def out_of_credits?

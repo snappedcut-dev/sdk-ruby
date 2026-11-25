@@ -31,7 +31,7 @@ module SnappedCut
 
     MAX_ATTEMPTS = 3
 
-    attr_reader :base
+    attr_reader :base, :webhooks, :destinations
 
     # @param chunk_size [Integer] lower it if the process is memory-constrained;
     #   one chunk is held in memory while it is sent.
@@ -41,6 +41,13 @@ module SnappedCut
       @timeout = timeout
       @chunk_size = chunk_size
       @http = http
+      @webhooks = Webhooks.new(self)
+      @destinations = Destinations.new(self)
+    end
+
+    # Also available as SnappedCut.verify_webhook.
+    def self.verify_webhook(...)
+      SnappedCut.verify_webhook(...)
     end
 
     # Never the key: an inspect ends up in logs and exception reports.
@@ -83,10 +90,13 @@ module SnappedCut
       rows.map { |raw| Job.from(raw) }
     end
 
-    # The rendered file. Raises unless the job is done.
-    def output(id)
-      request(Net::HTTP::Get, "/api/jobs/#{escape(id)}/output").body.to_s
+    # The rendered file. Raises unless the job is done. +index+ picks one of
+    # several outputs; the query is only sent when it is not the first.
+    def output(id, index = 0)
+      query = index.positive? ? "?index=#{index.to_i}" : ""
+      request(Net::HTTP::Get, "/api/jobs/#{escape(id)}/output#{query}").body.to_s
     end
+    alias download_output output
 
     # Wait for a job to finish, then hand back the file.
     #
@@ -96,24 +106,126 @@ module SnappedCut
     #
     # @yield [Job] every poll result, if a block is given
     def wait(id, timeout: 1800, sleeper: nil)
-      sleeper ||= ->(seconds) { sleep(seconds) }
-      deadline = monotonic + timeout
-      delay = 1.0
+      poll(id, timeout, sleeper) { |raw| yield Job.from(raw) if block_given? }
+      output(id)
+    end
 
+    # --- JSON jobs ---------------------------------------------------------
+    #
+    # These return Hashes with string keys, exactly as the server sent them, so
+    # a field added within a version never breaks anything.
+
+    # POST /api/jobs as JSON. An idempotency key makes a retry return the first
+    # job instead of charging for a second one.
+    def create_job(request, idempotency_key = nil)
+      key = idempotency_key || request[:idempotencyKey] || request["idempotencyKey"]
+      call_json(Net::HTTP::Post, "/api/jobs", request, key ? { "idempotency-key" => key } : {})
+    end
+
+    # Up to 100 jobs; +defaults+ is merged under each by the server.
+    def create_batch(jobs, defaults = nil)
+      body = { jobs: jobs }
+      body[:defaults] = defaults if defaults
+      call_json(Net::HTTP::Post, "/api/jobs/batch", body)
+    end
+
+    def get_job(id)
+      get_json("/api/jobs/#{escape(id)}")
+    end
+
+    def list_jobs
+      get_json("/api/jobs")["jobs"] || []
+    end
+
+    # Polls until the job is done (returns its Hash) or failed (raises).
+    # Backoff from 1 s, x1.5 each poll, capped at 15 s.
+    def wait_for_job(id, timeout: 1800, sleeper: nil)
+      poll(id, timeout, sleeper)
+    end
+
+    # --- Designs -----------------------------------------------------------
+
+    def compile_design(design, vars = nil)
+      body = { design: design }
+      body[:vars] = vars if vars
+      call_json(Net::HTTP::Post, "/api/designs", body)
+    end
+
+    def render_design(design, options = {}, idempotency_key = nil)
+      create_job(options.merge(design: design), idempotency_key)
+    end
+
+    # --- Uploads -----------------------------------------------------------
+
+    # Uploads a String or an IO (read one chunk at a time, never whole), then
+    # confirms it and returns the asset.
+    def upload(data, content_type, name = nil)
+      body = { contentType: content_type }
+      body[:name] = name if name
+      made = call_json(Net::HTTP::Post, "/api/uploads", body)
+      url = made.dig("upload", "url").to_s
+      step = made.dig("upload", "maxChunkBytes").to_i
+      raise Error.new("The upload has no chunk size.", 0) unless step.positive?
+
+      size = size_of(data)
+      offset = 0
       loop do
-        current = job(id)
-        yield current if block_given?
-
-        return output(id) if current.done?
-        # The credits are already back -- the server refunds a failure -- so this
-        # is a plain error, not something the caller has to reconcile.
-        raise Error.new(current.error || "The render failed.", 500) if current.failed?
-
-        raise Error.new("Job #{id} is still #{current.state}.", 504) if monotonic > deadline
-
-        sleeper.call(delay)
-        delay = [delay * 1.5, 15.0].min
+        to = [size, offset + step].min
+        # The upload URL carries its own permission; the API key is not sent to it.
+        request(Net::HTTP::Put, nil, slice(data, offset, to), content_type, url: "#{url}&offset=#{offset}")
+        offset = to
+        break if offset >= size
       end
+      call_json(Net::HTTP::Post, "/api/uploads/#{escape(made["assetId"])}/confirm", {})["asset"]
+    end
+
+    def get_asset(id)
+      get_json("/api/uploads/#{escape(id)}")["asset"]
+    end
+
+    def delete_asset(id)
+      request(Net::HTTP::Delete, "/api/uploads/#{escape(id)}")
+      nil
+    end
+
+    # --- Meta, usage, embed ------------------------------------------------
+
+    # Every operation, the render parameters, and the presets.
+    def operations
+      get_json("/api/operations")
+    end
+
+    def usage(from: nil, to: nil, end_user_id: nil, group_by: nil)
+      params = { from: from, to: to, endUserId: end_user_id, groupBy: group_by }.compact
+      get_json(params.empty? ? "/api/usage" : "/api/usage?#{encode(**params)}")
+    end
+
+    # Deletes one end user's renders and uploads, and their id from everything kept.
+    def delete_end_user(end_user_id)
+      call_json(Net::HTTP::Delete, "/api/usage?#{encode(endUserId: end_user_id)}")
+    end
+
+    # Mints an embed session token for one of your end users. Server side only.
+    def create_embed_token(pk, end_user_id, max_credits: nil, ttl_seconds: nil, origin: nil, features: nil)
+      body = { pk: pk, endUserId: end_user_id, maxCredits: max_credits,
+               ttlSeconds: ttl_seconds, origin: origin, features: features }.compact
+      call_json(Net::HTTP::Post, "/api/embed/tokens", body)
+    end
+
+    # --- Plumbing the sub-resources share ----------------------------------
+
+    # @api private
+    # JSON in (when +body+ is given), JSON out. +allow+ lists statuses that are
+    # answers rather than errors.
+    def call_json(verb, path, body = nil, headers = {}, allow: [])
+      raw = request(verb, path, body && JSON.generate(body), body && "application/json",
+                    headers: headers, allow: allow).body.to_s
+      raw.empty? ? {} : parse(raw)
+    end
+
+    # @api private
+    def escape(value)
+      URI.encode_www_form_component(value.to_s)
     end
 
     private
@@ -122,8 +234,25 @@ module SnappedCut
       Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
 
-    def escape(value)
-      URI.encode_www_form_component(value.to_s)
+    def poll(id, timeout, sleeper)
+      sleeper ||= ->(seconds) { sleep(seconds) }
+      deadline = monotonic + timeout
+      delay = 1.0
+
+      loop do
+        current = get_job(id)
+        yield current if block_given?
+
+        return current if current["state"] == "done"
+        # The credits are already back -- the server refunds a failure -- so this
+        # is a plain error, not something the caller has to reconcile.
+        raise Error.new(current["error"] || "The render failed.", 500) if current["state"] == "failed"
+
+        raise Error.new("Job #{id} is still #{current["state"]}.", 504) if monotonic > deadline
+
+        sleeper.call(delay)
+        delay = [delay * 1.5, 15.0].min
+      end
     end
 
     def encode(**params)
@@ -200,16 +329,19 @@ module SnappedCut
       parsed
     end
 
-    def request(verb, path, body = nil, content_type = nil)
-      uri = URI.parse("#{@base}#{path}")
+    # +url+ is an absolute URL that carries its own permission (an upload
+    # URL), so the key is never sent to it.
+    def request(verb, path, body = nil, content_type = nil, headers: {}, url: nil, allow: [])
+      uri = URI.parse(url || "#{@base}#{path}")
       req = verb.new(uri)
       req["user-agent"] = "snappedcut-ruby/#{VERSION}"
-      req["authorization"] = "Bearer #{@key}" unless @key.empty?
+      req["authorization"] = "Bearer #{@key}" unless @key.empty? || url
       req["content-type"] = content_type if content_type
+      headers.each { |name, value| req[name] = value }
       req.body = body if body
 
       response = perform(uri, req)
-      return response if response.code.to_i < 400
+      return response if response.code.to_i < 400 || allow.include?(response.code.to_i)
 
       # An error body is not guaranteed to be JSON -- a proxy may answer with
       # HTML -- and the status is the part that matters either way.
@@ -224,7 +356,8 @@ module SnappedCut
         detail["error"] || "Snapped Cut said #{response.code}.",
         response.code.to_i,
         retry_after_ms: detail["retryAfterMs"].to_i,
-        expected: detail["expected"].to_i
+        expected: detail["expected"].to_i,
+        code: detail["code"]&.to_s
       )
     end
 

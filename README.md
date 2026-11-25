@@ -1,6 +1,6 @@
 # snappedcut
 
-Ruby client for the [Snapped Cut](https://snappedcut.com) cloud render API.
+Ruby client for the [Snapped Cut](https://snappedcut.com) API.
 **The standard library and nothing else** — no gem dependencies, so it drops
 into a Rails app or a bare script without touching the bundle.
 
@@ -11,12 +11,29 @@ gem install snappedcut
 ```ruby
 require "snappedcut"
 
-snapcut = SnappedCut.new                        # reads SNAPCUT_KEY
+sc = SnappedCut.new                                 # reads SNAPCUT_KEY
+clip = File.open("clip.webm", "rb") { |f| sc.upload(f, "video/webm", "clip.webm") }
 
-job = snapcut.render(File.open("project.zip", "rb"))
+design = { width: 1080, height: 1920, clips: [{ type: "video", asset: clip["id"] }] }
+created = sc.render_design(design, {
+  outputs: [{ format: "mp4", preset: "vertical" }, { format: "webm", preset: "square" }]
+}, "launch-video-1")                                # Idempotency-Key: a retry is not a second charge
+
+job = sc.wait_for_job(created["job"]["id"])
+File.binwrite("out.mp4", sc.download_output(job["id"], 0))
+File.binwrite("out.webm", sc.download_output(job["id"], 1))
+```
+
+Presets: `source`, `vertical`, `square`, `portrait`, `landscape`, `hd720`,
+`uhd2160`. The JSON surface returns Hashes with string keys, exactly as the
+server sent them, so a field added within a version never breaks anything.
+
+Or render a bundle the editor exported:
+
+```ruby
+job = sc.render(File.open("project.zip", "rb"))
 puts "charged #{job.charged} credits for #{job.priced.seconds}s"
-
-File.binwrite("out.webm", snapcut.wait(job.id) { |j| puts j.state })
+File.binwrite("out.webm", sc.wait(job.id) { |j| puts j.state })
 ```
 
 Get a key from [your account page](https://snappedcut.com/account) — it looks
@@ -30,8 +47,27 @@ like `sk_snapcut_…`. Keep it in credentials, not in the repo; it spends credit
 | `#account` | Who the key belongs to, credits left, the price list. |
 | `#render(bundle, kind:)` | Queue a render. `bundle` is a String **or any IO**. |
 | `#job(id)` / `#jobs` | One job, or every job on the account. |
-| `#output(id)` | The rendered bytes. Raises unless the job is done. |
+| `#output(id, index = 0)` | The rendered bytes. Raises unless the job is done. Alias `#download_output`. |
 | `#wait(id, timeout:) { \|job\| }` | Polls to completion, returns the bytes. Yields each poll. |
+| `#create_job(request, idempotency_key)` | A JSON job (tool, design, asset). Returns `job`, `charged`, `price`, `credits`, `idempotent`. |
+| `#create_batch(jobs, defaults)` | Up to 100 jobs, each answered on its own. |
+| `#get_job(id)` / `#list_jobs` / `#wait_for_job(id, timeout:)` | The same as Hashes; `wait_for_job` returns the done job. |
+| `#compile_design(design, vars)` / `#render_design(design, options, idempotency_key)` | |
+| `#upload(data, content_type, name)` | String or IO, chunked; returns the confirmed asset. `#get_asset` / `#delete_asset`. |
+| `#operations` / `#usage(from:, to:, end_user_id:, group_by:)` / `#delete_end_user(id)` | |
+| `#create_embed_token(pk, end_user_id, max_credits:, ttl_seconds:, origin:, features:)` | |
+| `#destinations` | `list`, `create`, `get`, `update`, `delete`, `test` (a 422 is returned, not raised), `presign`. |
+| `#webhooks` | `list`, `create(url, events)`, `get`, `update(id, url:, events:, enabled:)`, `delete`, `rotate`, `deliveries`, `test`. |
+
+## Verifying webhooks
+
+```ruby
+ok = SnappedCut.verify_webhook(secret, request.raw_post, request.headers["X-Snappedcut-Signature"])
+head(ok ? :ok : :unauthorized)
+```
+
+Pass the raw body, not re-serialised JSON. Signatures more than five minutes
+from now are refused, and the comparison is constant-time.
 
 ## Pass an IO for anything large
 
@@ -66,7 +102,8 @@ actually charged is in `charged`, with the server's reasoning in `priced`.
 
 ## Errors
 
-Every failure raises `SnappedCut::Error` with the HTTP `status` on it, and the
+Every failure raises `SnappedCut::Error` with the HTTP `status` (and the body's
+`code`, when it has one) on it, and the
 two failures you actually branch on have predicates:
 
 ```ruby

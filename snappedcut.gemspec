@@ -6,8 +6,8 @@ Gem::Specification.new do |spec|
   spec.name = "snappedcut"
   spec.version = SnappedCut::VERSION
   spec.authors = ["Illuminati Networks"]
-  spec.summary = "Ruby SDK for the Snapped Cut cloud render API."
-  spec.description = "A client for the Snapped Cut cloud render API. " \
+  spec.summary = "Ruby SDK for the Snapped Cut API."
+  spec.description = "A client for the Snapped Cut API: jobs, designs, uploads, webhooks. " \
                      "The standard library and nothing else -- no gem dependencies."
   spec.homepage = "https://snappedcut.com"
   spec.license = "MIT"

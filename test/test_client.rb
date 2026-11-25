@@ -178,4 +178,122 @@ class TestClient < Minitest::Test
   def test_jobs_tolerates_an_empty_account
     assert_empty client([200, {}]).jobs
   end
+
+  # --- 0.2.0 surface -------------------------------------------------------
+
+  SECRET = "whsec_snapcut_test"
+  EVENT = '{"id":"evt_1","type":"job.succeeded"}'
+  SIGNATURE = "t=1760000000000,v1=54c2adf2a351242de19b156794d65c56bebf9fc56cadac990c56b979a7a61ab2"
+
+  def test_the_fixed_webhook_vector
+    assert SnappedCut.verify_webhook(SECRET, EVENT, SIGNATURE, 1_760_000_001_000)
+    refute SnappedCut.verify_webhook(SECRET, EVENT, SIGNATURE, 1_760_000_400_000)
+    refute SnappedCut.verify_webhook(SECRET, "#{EVENT} ", SIGNATURE, 1_760_000_001_000)
+    assert SnappedCut::Client.verify_webhook(SECRET, EVENT, SIGNATURE, 1_760_000_001_000)
+  end
+
+  def test_a_malformed_signature_is_false_not_an_exception
+    refute SnappedCut.verify_webhook(SECRET, EVENT, nil, 1_760_000_001_000)
+    refute SnappedCut.verify_webhook(SECRET, EVENT, "garbage", 1_760_000_001_000)
+    refute SnappedCut.verify_webhook(SECRET, EVENT, "v1=#{"0" * 64}", 1_760_000_001_000)
+    refute SnappedCut.verify_webhook(SECRET, EVENT, "t=1760000000000,v1=ABC", 1_760_000_001_000)
+  end
+
+  def test_create_job_sends_the_idempotency_key_the_bearer_key_and_json
+    created = client([201, { "job" => { "id" => "j1", "state" => "queued" }, "charged" => 3,
+                             "price" => 3, "credits" => 7, "idempotent" => false, "extra" => 1 }])
+              .create_job({ design: { clips: [] }, format: "mp4" }, "idem-1")
+    call = @calls[0]
+
+    assert_equal "POST", call[:method]
+    assert_equal "https://snappedcut.com/api/jobs", call[:url]
+    assert_equal "idem-1", call[:headers]["idempotency-key"]
+    assert_equal "Bearer sk_snapcut_test", call[:headers]["authorization"]
+    assert_equal "application/json", call[:headers]["content-type"]
+    assert_equal "snappedcut-ruby/0.2.0", call[:headers]["user-agent"]
+    assert_equal({ "design" => { "clips" => [] }, "format" => "mp4" }, JSON.parse(call[:body]))
+    assert_equal "j1", created["job"]["id"]
+  end
+
+  def test_a_402_on_create_job_is_out_of_credits
+    error = assert_raises(SnappedCut::Error) do
+      client([402, { "error" => "Not enough credits.", "retryAfterMs" => 0 }]).create_job({ tool: "compress" })
+    end
+    assert error.out_of_credits?
+    assert_equal "Not enough credits.", error.message
+    assert_equal 0, error.retry_after_ms
+    assert_nil error.code
+  end
+
+  def test_an_error_carries_its_code
+    error = assert_raises(SnappedCut::Error) do
+      client([429, { "error" => "Slow down.", "code" => "rate_limited" }]).operations
+    end
+    assert_equal "rate_limited", error.code
+  end
+
+  def test_upload_puts_two_chunks_without_the_key_then_confirms
+    asset = client([201, { "assetId" => "a1",
+                           "upload" => { "url" => "https://up.test/u/a1?token=tok", "maxChunkBytes" => 4 } }],
+                   [200, {}], [200, {}],
+                   [200, { "asset" => { "id" => "a1", "confirmed" => true } }])
+            .upload(StringIO.new("abcdef"), "video/webm", "clip.webm")
+    chunks = @calls.select { |c| c[:method] == "PUT" }
+
+    assert_equal({ "contentType" => "video/webm", "name" => "clip.webm" }, JSON.parse(@calls[0][:body]))
+    assert_equal %w[https://up.test/u/a1?token=tok&offset=0 https://up.test/u/a1?token=tok&offset=4],
+                 chunks.map { |c| c[:url] }
+    assert_equal %w[abcd ef], chunks.map { |c| c[:body] }
+    chunks.each { |c| refute c[:headers].key?("authorization") }
+    assert_equal "https://snappedcut.com/api/uploads/a1/confirm", @calls.last[:url]
+    assert_equal "a1", asset["id"]
+  end
+
+  def test_wait_for_job_returns_the_job_on_done
+    slept = []
+    found = client([200, job_body("queued")], [200, job_body("running")], [200, job_body("done")])
+            .wait_for_job("j1", sleeper: ->(s) { slept << s })
+    assert_equal "done", found["state"]
+    assert_equal [1.0, 1.5], slept
+  end
+
+  def test_wait_for_job_raises_on_failed
+    error = assert_raises(SnappedCut::Error) do
+      client([200, job_body("failed", "Decode failed.")]).wait_for_job("j1", sleeper: ->(_) {})
+    end
+    assert_equal "Decode failed.", error.message
+  end
+
+  def test_download_output_only_sends_an_index_past_the_first
+    c = client([200, "OUT0"], [200, "OUT1"])
+    assert_equal "OUT0", c.download_output("j1")
+    c.download_output("j1", 1)
+    assert_equal %w[https://snappedcut.com/api/jobs/j1/output https://snappedcut.com/api/jobs/j1/output?index=1],
+                 @calls.map { |c2| c2[:url] }
+  end
+
+  def test_a_destination_test_422_is_an_answer
+    assert_equal false, client([422, { "ok" => false, "error" => "Access denied" }]).destinations.test("d1")["ok"]
+  end
+
+  def test_usage_omits_absent_params
+    c = client([200, {}], [200, {}])
+    c.usage
+    c.usage(end_user_id: "u 1", group_by: "day")
+    assert_equal %w[https://snappedcut.com/api/usage https://snappedcut.com/api/usage?endUserId=u+1&groupBy=day],
+                 @calls.map { |x| x[:url] }
+  end
+
+  def test_webhook_update_sends_only_what_changed
+    c = client([200, { "webhook" => { "id" => "w1", "enabled" => false } }], [200, { "secret" => "whsec_new" }])
+    assert_equal false, c.webhooks.update("w1", enabled: false)["enabled"]
+    assert_equal "PATCH", @calls[0][:method]
+    assert_equal({ "enabled" => false }, JSON.parse(@calls[0][:body]))
+    assert_equal "whsec_new", c.webhooks.rotate("w1")
+  end
+
+  def test_a_delete_with_an_empty_body_returns_nil
+    assert_nil client([204, ""]).delete_asset("a1")
+    assert_equal "DELETE", @calls[0][:method]
+  end
 end

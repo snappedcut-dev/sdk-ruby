@@ -3,7 +3,9 @@
 require_relative "snappedcut/version"
 require_relative "snappedcut/error"
 require_relative "snappedcut/models"
+require_relative "snappedcut/webhook"
 require_relative "snappedcut/client"
+require_relative "snappedcut/resources"
 
 # Snapped Cut: a video editor that runs in the browser, and a cloud render queue
 # that does not. This gem talks to the queue.
